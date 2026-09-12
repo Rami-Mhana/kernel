@@ -1,92 +1,120 @@
-# CLAUDE.md
+# Kernel repository guidance
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-## Project Overview
-
-**dahih-archive** — A YouTube episode archiving and enrichment pipeline for the "الدحيح" (Al Daheeh) channel and related channels. The project fetches video metadata using `yt-dlp`, enriches and audits classifications, then builds a searchable static learning library.
+Kernel is a YouTube episode archiving and enrichment pipeline for the "الدحيح"
+(Al Daheeh) channel and related channels. It fetches metadata, cleans descriptions,
+classifies topics, audits uncertain records, and builds a searchable static library.
 
 ## Architecture
 
-```
-dahih-archive/
-├── scripts/
-│   ├── fetch_episodes.py      # Fetches video metadata from YouTube channels → CSV
-│   └── fetch_descriptions.py  # Enriches CSV with video descriptions from YouTube
-├── data/
-│   ├── raw/                   # Raw JSONL output from yt-dlp (one file per channel)
-│   ├── episodes.csv           # Initial merged CSV
-│   ├── episodes_3.csv         # Output from fetch_episodes.py
-│   ├── episodes_dahih_final.csv / _v2 / _classified_final / _with_desc.csv  # Progressive enrichment stages
-└── requirements.txt           # Python dependencies: yt-dlp, pandas
+```text
+scripts/fetch_episodes.py       yt-dlp channel metadata -> raw JSONL + CSV
+scripts/fetch_descriptions.py   cached episode CSV -> cleaned descriptions
+scripts/classification.py       title-first deterministic taxonomy + optional AI fallback
+scripts/classify_audit.py       deduplicated, prioritized audit CSV
+scripts/build_demo.py           curated CSV + template -> standalone HTML
+scripts/content_schema.py       canonical Episode schema and shared cleaning helpers
+daheeh-demo.html                 Kernel browser template and local learner dashboard
+data/raw/                        local yt-dlp metadata cache (ignored by Git)
 ```
 
-## Commands
+`video_id` is the stable record key. The generated HTML stores watchlist, status,
+notes, profile name, and theme in browser `localStorage`. The profile gate is a
+local UX boundary, not authentication or cross-device synchronization.
 
-### Setup
-```bash
-# Create virtual environment
+## Setup on Windows
+
+```powershell
 python -m venv venv
-.\venv\Scripts\activate   # Windows PowerShell
+.\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
-### Fetch Episodes (metadata only)
-```bash
+## End-to-end workflow
+
+### 1. Fetch metadata
+
+```powershell
 python scripts/fetch_episodes.py
 ```
-- Reads `CHANNELS` dict in the script (edit to add/remove channels)
-- Outputs raw JSONL to `data/raw/<channel_name>.jsonl`
-- Merges all channels into `data/episodes_3.csv`
-- Raw JSONL records retain `id`, `thumbnails`, `duration`, `view_count`, availability, and playlist context.
-- Generated episode records use `video_id` as the stable key and include `thumbnail`, `duration_seconds`, and `content_type`.
 
-### Fetch Descriptions (enrichment)
+This reads the `CHANNELS` map or accepts positional YouTube URLs, writes raw JSONL
+under `data/raw/`, and creates a UTF-8 BOM CSV. Keep raw JSONL locally; it is
+excluded from Git because it is a reproducible cache and can be large.
 
-```bash
+### 2. Enrich descriptions
+
+```powershell
 python scripts/fetch_descriptions.py
 ```
 
-- Reads `data/episodes_dahih_final_v2.csv` (configure `INPUT_CSV` in script)
-- Appends `description` column (truncated to 500 chars, newlines replaced)
-- Resumes from `data/episodes_dahih_with_desc.csv` if interrupted
-- Rate-limited: 1.5s between requests (`SLEEP_SECONDS`)
+The script reads `INPUT_CSV`, resumes from `OUTPUT_CSV`, and calls `yt-dlp` only for
+records without a cached description. Cleaning is shared with the webapp pipeline:
+reference-heavy `#:` sections, URL-only citations, and promotional boilerplate are
+removed before the 500-character limit is applied.
 
-### Audit and Build
+### 3. Generate the audit dataset
 
 ```powershell
+python scripts/classify_audit.py
+```
+
+The audit generator:
+
+- Hydrates missing thumbnail, duration, view count, and content metadata from
+  `data/raw/*.jsonl` when the legacy input CSV omits those fields.
+- Deduplicates by `video_id` (falling back to URL) and keeps the most complete record.
+- Preserves manual decisions using `video_id` first, then URL.
+- Uses title-first deterministic classification and selects a reproducible
+  highest-priority sample.
+- Writes `data/episodes_classification_audit.csv` with UTF-8 BOM.
+
+Use `--input`, `--output`, `--sample-size`, `--seed`, and `--raw-dir` to run against
+another dataset. Review low confidence, conflicts, missing descriptions, and
+uncategorized records before publishing.
+
+### 4. Build the library
+
+```powershell
+python scripts/build_demo.py
+```
+
+This applies manual classifications from the audit CSV, injects records into
+`daheeh-demo.html`, and writes `daheeh-demo-built.html`. Test the generated file in
+a browser with RTL layout, keyboard navigation, light/dark/system themes, reduced
+motion, invalid import files, and the local profile flow.
+
+## Classification policy
+
+The deterministic classifier is the repeatable source of truth:
+
+1. Extract the meaningful topic from the title.
+2. Match specific title patterns and normalized Arabic/English keywords.
+3. Use cleaned description text as supporting evidence.
+4. Record confidence, rationale, model, and proposed categories.
+
+An optional AI provider may classify only ambiguous records. It must use the existing
+allowed taxonomy, return structured JSON, preserve the deterministic result for
+comparison, and never write API keys into source code or generated HTML.
+
+## Data and encoding conventions
+
+- Use UTF-8 BOM (`utf-8-sig`) for CSV files containing Arabic text.
+- Keep `video_id` in all new pipeline outputs.
+- Preserve manual audit fields when regenerating derived CSVs.
+- Do not commit `venv/`, `data/raw/`, generated `output/`, secrets, or local editor state.
+
+## Validation
+
+There is no formal test suite. Before committing pipeline changes:
+
+```powershell
+$files = Get-ChildItem scripts -Filter *.py | ForEach-Object { $_.FullName }
+python -m py_compile $files
+git diff --check
 python scripts/classify_audit.py
 python scripts/build_demo.py
 ```
 
-Review `data/episodes_classification_audit.csv` before delivery. Manual classifications override automatic suggestions during the build. Check low-confidence, conflicting, missing-description, duplicate, and uncategorized records rather than publishing an unchecked automated result.
-
-### Static library features
-
-`daheeh-demo.html` is the shared template. It provides thumbnail cards, search, category/type filters, sorting, keyboard-friendly controls, and light/dark/system themes. The Personal Dashboard stores watchlist, in-progress, completed, notes, profile name, and theme locally in the browser. Its JSON export/import is a backup mechanism; it is not secure authentication or cross-device sync.
-
-## Key Files to Modify
-
-| File | Purpose |
-| ------ | --------- |
-| `scripts/fetch_episodes.py:8-14` | Add/remove YouTube channels in `CHANNELS` dict |
-| `scripts/fetch_episodes.py:16-17` | Change `RAW_DIR` or `OUTPUT_CSV` paths |
-| `scripts/fetch_descriptions.py:9-11` | Change `INPUT_CSV`, `OUTPUT_CSV`, `SLEEP_SECONDS` |
-
-## Data Flow
-
-1. **Raw fetch**: `yt-dlp --flat-playlist --dump-json <channel_url>` → `data/raw/*.jsonl`
-2. **Parse & merge**: JSONL → CSV with standard columns
-3. **Manual curation**: User fills `domain`, `watched`, `extracted`, `notes` columns
-4. **Description enrichment**: `yt-dlp --skip-download --print "%(description)s" <video_url>` → adds `description` column
-5. **Processing and audit**: clean descriptions, propose channel-appropriate categories, and review uncertain records.
-6. **Static delivery**: inject the final records into the shared HTML template and test the generated file in a browser.
-
-## Notes
-
-- Requires `yt-dlp` installed and in PATH (included in `requirements.txt`)
-- All CSV files use UTF-8 with BOM (`utf-8-sig`) for Arabic text compatibility
-- The `study/extraction_template.md` appears to be empty — may be a placeholder for future extraction schemas
-- Do not put AI API keys in generated HTML or commit them to the repository.
-- Remote YouTube thumbnail URLs require network access; add a local thumbnail-download mode if a fully offline artifact is required.
-- No test suite exists; scripts are run manually
+For audit changes, also verify row counts, duplicate `video_id` values, populated
+thumbnail/duration fields where raw metadata exists, and that no URL-only
+descriptions remain.

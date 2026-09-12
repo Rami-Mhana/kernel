@@ -15,6 +15,7 @@ Generates prioritized audit dataset for manual review:
 import csv
 import random
 import json
+import re
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional
@@ -40,6 +41,7 @@ from classification import (
 # ============ CONFIG ============
 INPUT_CSV = Path("data/episodes_dahih_with_desc.csv")
 OUTPUT_CSV = Path("data/episodes_classification_audit.csv")
+RAW_DIR = Path("data/raw")
 SAMPLE_SIZE = 100  # Increased from 50
 SEED = 42
 
@@ -70,10 +72,11 @@ def calculate_priority(ep: Episode, det_result) -> tuple[float, list[str]]:
     reasons = []
 
     # Base weight from audit status
-    status_weight = PRIORITY_WEIGHTS.get(ep.audit_status, 1)
+    status_value = ep.audit_status.value if hasattr(ep.audit_status, "value") else ep.audit_status
+    status_weight = PRIORITY_WEIGHTS.get(status_value, 1)
     score += status_weight
     if status_weight > 1:
-        reasons.append(f"status:{ep.audit_status}")
+        reasons.append(f"status:{status_value}")
 
     # Low confidence
     if ep.classification_confidence < 0.5:
@@ -126,16 +129,56 @@ def calculate_priority(ep: Episode, det_result) -> tuple[float, list[str]]:
     return score, reasons
 
 
-def load_episodes_from_csv(csv_path: Path) -> list[Episode]:
+def load_raw_metadata(raw_dir: Path) -> dict[str, dict]:
+    """Load yt-dlp metadata keyed by video ID for CSVs with legacy schemas."""
+    metadata = {}
+    if not raw_dir.exists():
+        return metadata
+    for jsonl_path in raw_dir.glob("*.jsonl"):
+        try:
+            with jsonl_path.open(encoding="utf-8") as handle:
+                for line in handle:
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    video_id = record.get("id", "").strip()
+                    if video_id:
+                        metadata[video_id] = record
+        except OSError as exc:
+            print(f"[WARN] Could not read metadata cache {jsonl_path}: {exc}")
+    return metadata
+
+
+def video_id_from_url(url: str) -> str:
+    match = re.search(r"(?:v=|youtu\.be/)([A-Za-z0-9_-]{11})", url or "")
+    return match.group(1) if match else ""
+
+
+def load_episodes_from_csv(csv_path: Path, raw_dir: Path = RAW_DIR) -> list[Episode]:
     """Load episodes from CSV file."""
     episodes = []
     if not csv_path.exists():
         print(f"[ERROR] Input CSV not found: {csv_path}")
         return episodes
 
+    raw_metadata = load_raw_metadata(raw_dir)
     with open(csv_path, encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         for row in reader:
+            video_id = row.get("video_id", "").strip() or video_id_from_url(row.get("url", ""))
+            raw = raw_metadata.get(video_id, {})
+            # Legacy enrichment CSVs omit metadata that is available in yt-dlp
+            # JSONL. Fill only missing values so curated CSV data remains authoritative.
+            row["video_id"] = video_id
+            row["duration_seconds"] = row.get("duration_seconds") or raw.get("duration") or 0
+            row["duration_string"] = row.get("duration_string") or raw.get("duration_string") or ""
+            row["thumbnail_url"] = row.get("thumbnail_url") or raw.get("thumbnail") or ""
+            if not row["thumbnail_url"] and raw.get("thumbnails"):
+                thumbnails = [item for item in raw["thumbnails"] if item.get("url")]
+                if thumbnails:
+                    row["thumbnail_url"] = thumbnails[-1]["url"]
+            row["view_count"] = row.get("view_count") or raw.get("view_count") or 0
             # Convert pipe-separated fields back to lists
             for field in ["secondary_categories", "proposed_categories"]:
                 if row.get(field):
@@ -186,9 +229,9 @@ def load_existing_audit(audit_path: Path) -> dict[str, dict]:
     with open(audit_path, encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            url = row.get('url', '').strip()
-            if url:
-                manual[url] = {
+            key = row.get("video_id", "").strip() or row.get("url", "").strip()
+            if key:
+                manual[key] = {
                     'manual_category': row.get('manual_category', '').strip(),
                     'manual_secondary': row.get('manual_secondary', '').strip(),
                     'manual_notes': row.get('manual_notes', '').strip(),
@@ -216,12 +259,13 @@ def select_audit_sample(
         existing_audit = {}
 
     # Deduplicate episodes by video_id first
-    seen_vids = set()
-    unique_episodes = []
+    unique_by_id = {}
     for ep in episodes:
-        if ep.video_id not in seen_vids:
-            seen_vids.add(ep.video_id)
-            unique_episodes.append(ep)
+        key = ep.video_id or ep.url
+        current = unique_by_id.get(key)
+        if current is None or episode_completeness(ep) > episode_completeness(current):
+            unique_by_id[key] = ep
+    unique_episodes = list(unique_by_id.values())
 
     print(f"  Deduplicated: {len(episodes)} -> {len(unique_episodes)} episodes")
 
@@ -236,7 +280,8 @@ def select_audit_sample(
         score, reasons = calculate_priority(ep, det_result)
 
         # Boost score if already manually reviewed (for verification)
-        if ep.url in existing_audit and existing_audit[ep.url].get('manual_category'):
+        audit_key = ep.video_id or ep.url
+        if audit_key in existing_audit and existing_audit[audit_key].get('manual_category'):
             score += 0.5
             reasons.append("existing_review")
 
@@ -257,6 +302,21 @@ def select_audit_sample(
     return selected
 
 
+def episode_completeness(ep: Episode) -> int:
+    """Prefer the duplicate record with the most usable metadata."""
+    return sum((
+        bool(ep.title),
+        bool(ep.url),
+        bool(ep.channel),
+        bool(ep.description),
+        bool(ep.thumbnail_url),
+        bool(ep.duration_seconds),
+        bool(ep.duration_string),
+        bool(ep.view_count),
+        bool(ep.primary_category),
+    ))
+
+
 def generate_audit_csv(candidates: list[AuditCandidate], existing_audit: dict, output_path: Path) -> None:
     """Generate audit CSV with all required fields."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -270,7 +330,7 @@ def generate_audit_csv(candidates: list[AuditCandidate], existing_audit: dict, o
             det_result = cand.deterministic_result
 
             # Existing manual data
-            manual = existing_audit.get(ep.url, {})
+            manual = existing_audit.get(ep.video_id or ep.url, {})
 
             # Proposed categories
             proposed_primary = ep.primary_category
@@ -304,7 +364,10 @@ def generate_audit_csv(candidates: list[AuditCandidate], existing_audit: dict, o
                 "manual_category": manual.get('manual_category', ''),
                 "manual_secondary": manual.get('manual_secondary', ''),
                 "manual_notes": manual.get('manual_notes', ''),
-                "audit_status": manual.get('audit_status', ep.audit_status),
+                "audit_status": manual.get(
+                    "audit_status",
+                    ep.audit_status.value if hasattr(ep.audit_status, "value") else ep.audit_status,
+                ),
                 "audit_timestamp": "",
                 "priority_score": f"{cand.priority_score:.1f}",
                 "priority_reasons": "|".join(cand.priority_reasons),
@@ -401,6 +464,7 @@ def main():
     parser.add_argument("-o", "--output", default=str(OUTPUT_CSV), help="Output audit CSV")
     parser.add_argument("-n", "--sample-size", type=int, default=SAMPLE_SIZE, help="Sample size")
     parser.add_argument("--seed", type=int, default=SEED, help="Random seed")
+    parser.add_argument("--raw-dir", default=str(RAW_DIR), help="yt-dlp JSONL metadata directory")
     parser.add_argument("--taxonomy-config", help="Path to custom taxonomy JSON config")
     parser.add_argument("--report-only", action="store_true", help="Only generate quality report, no audit CSV")
 
@@ -419,7 +483,7 @@ def main():
     print("=" * 60)
 
     # Load episodes
-    episodes = load_episodes_from_csv(Path(args.input))
+    episodes = load_episodes_from_csv(Path(args.input), Path(args.raw_dir))
     if not episodes:
         print("[ERROR] No episodes loaded")
         sys.exit(1)

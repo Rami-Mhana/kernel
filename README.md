@@ -33,6 +33,41 @@ The deterministic classifier is the source of truth for repeatable builds. An AI
 provider can be added as a fallback for ambiguous records, but its suggestions must
 remain auditable and must not replace the title-based rules silently.
 
+### Reproducible audit workflow
+
+The audit CSV is a review artifact, not an unchecked publication list:
+
+```powershell
+python scripts/classify_audit.py `
+  --input data/episodes_dahih_with_desc.csv `
+  --output data/episodes_classification_audit.csv `
+  --raw-dir data/raw `
+  --sample-size 100 `
+  --seed 42
+```
+
+Audit generation uses `video_id` as the primary key, removes duplicate records, and
+keeps the most complete duplicate. When the legacy enriched CSV does not contain
+duration, thumbnail, or view-count fields, the generator hydrates them from the
+local `data/raw/*.jsonl` cache. Existing manual decisions are matched by
+`video_id` first and URL second.
+
+Before building, review low-confidence, conflicting, uncategorized, and
+missing-description records in the audit CSV. The script reports category coverage,
+confidence distribution, missing metadata, and sample priority.
+
+### Recommended rebuild sequence
+
+```powershell
+python scripts/fetch_episodes.py
+python scripts/fetch_descriptions.py
+python scripts/classify_audit.py
+python scripts/build_demo.py
+```
+
+If metadata has already been fetched, skip the first command. If descriptions are
+already cached, `fetch_descriptions.py` resumes instead of refetching completed rows.
+
 ## التشغيل على Windows
 
 ```powershell
@@ -80,6 +115,7 @@ python scripts/fetch_episodes.py `
 - النسخة المبنية: [daheeh-demo-built.html](daheeh-demo-built.html)
 - بيانات الأوصاف: [episodes_dahih_with_desc.csv](data/episodes_dahih_with_desc.csv)
 - سجل تدقيق العينة: [episodes_classification_audit.csv](data/episodes_classification_audit.csv)
+- اسم المنتج: **Kernel**
 
 إعادة بناء الديمو:
 
@@ -130,6 +166,9 @@ python scripts/build_demo.py
 ### لوحة المتابعة والملف المحلي
 
 تدعم المكتبة وضعيات الحفظ، قيد المشاهدة، والمكتمل، بالإضافة إلى الملاحظات وحساب وقت المشاهدة. تُحفظ هذه البيانات في `localStorage` داخل المتصفح، ويمكن تصديرها إلى JSON واستيرادها لاحقًا. الملف الشخصي المحلي ليس تسجيل دخول آمنًا ولا يزامن البيانات بين الأجهزة.
+
+يحتوي الاستيراد على تحقق من الإصدار وبنية بيانات الفيديو والحالة والملاحظات والمظهر.
+يُطلب اسم ملف محلي قبل فتح لوحة المتابعة، مع بقاء البيانات داخل المتصفح فقط.
 
 ### المظهر والوصول
 
