@@ -352,14 +352,18 @@ def clean_description_for_classification(description: str) -> str:
 
     text = description.replace("\r\n", "\n").replace("\r", "\n").replace("\u00a0", " ")
     # Keep the editorial introduction and discard the citation block.
-    text = re.split(r"(?i)#\s*:", text, maxsplit=1)[0]
+    text = re.split(
+        r"(?i)(?:#\s*:|(?:المصادر|المراجع|references?)\s*:)",
+        text,
+        maxsplit=1,
+    )[0]
     lines = text.split("\n")
     cleaned_lines = []
 
     # Patterns to skip when a line is entirely boilerplate.
     skip_patterns = [
         r"^\s*(?:https?://|www\.)",
-        r"^\s*[#@]\w+(?:\s+[#@]\w+)*\s*$",
+        r"^\s*[:#@.\-_\s]*(?:[@#]\w+)(?:\s+[@#]\w+)*\s*$",
         r"(اشترك|subscribe|follow|تابع|لا تنس|don't forget)",
         r"(رابط|link|لينك).{0,80}(https?://|www\.)",
         r"(كود|كوبون|خصم|discount|promo(?:tion)?|sponsor(?:ed)?|code)",
@@ -378,6 +382,12 @@ def clean_description_for_classification(description: str) -> str:
         # Drop citation-only fragments that were not under an explicit marker.
         without_urls = url_regex.sub("", line).strip(" -:|,؛،")
         if not without_urls or len(url_regex.findall(line)) >= 2 and len(without_urls) < 30:
+            continue
+        # YouTube metadata sometimes contains replacement characters and
+        # punctuation-only remnants around an otherwise empty reference block.
+        if "\ufffd" in without_urls:
+            without_urls = without_urls.replace("\ufffd", " ")
+        if not re.search(r"[A-Za-z\u0600-\u06ff\u0750-\u077f0-9]", without_urls):
             continue
         cleaned_lines.append(without_urls)
 

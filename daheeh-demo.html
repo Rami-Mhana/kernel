@@ -675,7 +675,7 @@ function filterEpisodes(list) {
       (ep.refs_hint || '').toLowerCase().includes(searchQuery) ||
       ep.channel.toLowerCase().includes(searchQuery);
 
-    const matchesFilter = activeFilter === 'all' || ep.category === activeFilter;
+    const matchesFilter = activeFilter === 'all' || episodeCategory(ep) === activeFilter;
     const matchesType = contentType === 'all' || (ep.content_type || 'video') === contentType;
 
     return matchesSearch && matchesFilter && matchesType;
@@ -685,7 +685,7 @@ function filterEpisodes(list) {
 function groupByCategory(list) {
   const groups = {};
   for (const ep of list) {
-    const cat = ep.category || 'عام / متنوع';
+    const cat = episodeCategory(ep);
     if (!groups[cat]) groups[cat] = [];
     groups[cat].push(ep);
   }
@@ -790,7 +790,7 @@ function renderFilterChips() {
   // Count episodes per category
   const counts = {};
   for (const ep of episodes) {
-    const cat = ep.category || 'عام / متنوع';
+    const cat = episodeCategory(ep);
     counts[cat] = (counts[cat] || 0) + 1;
   }
 
@@ -851,12 +851,16 @@ function clearAllFilters() {
 }
 
 function updateStats() {
-  const categories = new Set(episodes.map(ep => ep.category || 'عام / متنوع'));
+  const categories = new Set(episodes.map(episodeCategory));
   const channels = new Set(episodes.map(ep => ep.channel));
 
   totalEpisodesEl.textContent = episodes.length;
   totalCategoriesEl.textContent = categories.size;
   totalChannelsEl.textContent = channels.size;
+}
+
+function episodeCategory(ep) {
+  return ep.primary_category || ep.category || 'عام / متنوع';
 }
 
 function persistState() {

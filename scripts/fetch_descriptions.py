@@ -5,6 +5,7 @@ import csv
 import os
 import sys
 import time
+from pathlib import Path
 
 # Import shared description cleaning
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
@@ -52,13 +53,15 @@ def main():
     done = load_existing_output()
     total = len(rows)
 
-    with open(OUTPUT_CSV, "w", newline="", encoding="utf-8-sig") as f:
+    output_path = Path(OUTPUT_CSV)
+    temp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+    with temp_path.open("w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
 
         for i, row in enumerate(rows, 1):
             url = row["url"]
-            if url in done and done[url].get("description", "").strip():
+            if url in done:
                 # Re-clean cached descriptions so improvements apply without
                 # re-fetching 649 unchanged YouTube records.
                 cached = clean_description_for_classification(done[url]["description"])
@@ -82,6 +85,7 @@ def main():
             print(f"[{i}/{total}] {row['title'][:50]}")
             time.sleep(SLEEP_SECONDS)
 
+    temp_path.replace(output_path)
     print(f"Done -> {OUTPUT_CSV}")
 
 
