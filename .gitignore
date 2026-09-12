@@ -1,0 +1,17 @@
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# Local/editor state
+.vscode/
+.claude/
+
+# Generated runtime artifacts
+data/raw/
+output/
